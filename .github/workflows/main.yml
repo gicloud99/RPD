@@ -24,11 +24,11 @@ jobs:
 
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User (Datlohehe / OLXQ)
+      - name: Create RDP User (tk / mk)
         shell: pwsh
         run: |
           $username = "Datlohehe"
-          $password = "OLXQ"
+          $password = "OLXQ@1234"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
