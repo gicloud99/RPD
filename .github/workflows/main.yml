@@ -57,7 +57,11 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $exe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=("gh-runner-" + $env:GITHUB_RUN_ID) | Out-Null
+
+          # Tạo hostname hợp lệ
+          $hostName = "ghrunner-" + $env:GITHUB_RUN_NUMBER
+
+          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName | Out-Null
 
           $tsIP = $null
           $retries = 0
@@ -76,7 +80,6 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_ENV -Value ("TAILSCALE_IP=" + $tsIP)
-
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
