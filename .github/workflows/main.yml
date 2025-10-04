@@ -1,4 +1,4 @@
-name: RDP
+name: RDP + Sunshine
 
 on:
   workflow_dispatch:
@@ -57,8 +57,6 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $exe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-
-          # Tạo hostname hợp lệ
           $hostName = "ghrunner-" + $env:GITHUB_RUN_NUMBER
 
           & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName | Out-Null
@@ -80,6 +78,7 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_ENV -Value ("TAILSCALE_IP=" + $tsIP)
+
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
@@ -92,17 +91,27 @@ jobs:
           }
           Write-Host "TCP connectivity to port 3389 successful."
 
+      - name: Install Sunshine (for Moonlight)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-Installer.exe" -OutFile "$env:TEMP\sunshine.exe"
+          Start-Process -FilePath "$env:TEMP\sunshine.exe" -ArgumentList "/S" -Wait
+          netsh advfirewall firewall add rule name="Sunshine-TCP" dir=in action=allow protocol=TCP localport=47984
+          netsh advfirewall firewall add rule name="Sunshine-UDP" dir=in action=allow protocol=UDP localport=47989
+          Write-Host "Sunshine installed and firewall ports opened."
+
       - name: Maintain Connection (prints credentials)
         shell: pwsh
         run: |
           $creds = (Get-Content -Path $env:GITHUB_ENV | Where-Object { $_ -like 'RDP_CREDS=*' }) -split '=' | Select-Object -Last 1
           $tsIP = $env:TAILSCALE_IP
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $tsIP"
-          Write-Host "Credentials: $creds"
-          Write-Host "==================`n"
+          Write-Host "`n=== ACCESS INFO ==="
+          Write-Host "Tailscale IP: $tsIP"
+          Write-Host "RDP Credentials: $creds"
+          Write-Host "Sunshine: https://$tsIP:47984"
+          Write-Host "=====================`n"
 
           while ($true) {
-              Write-Host "[$(Get-Date -Format o)] RDP Active - workflow will run until cancelled."
+              Write-Host "[$(Get-Date -Format o)] Active - workflow running."
               Start-Sleep -Seconds 300
           }
