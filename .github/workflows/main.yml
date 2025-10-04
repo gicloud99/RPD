@@ -1,4 +1,4 @@
-name: RDP + Sunshine
+name: RDP + Sunshine (Full Admin)
 
 on:
   workflow_dispatch:
@@ -9,22 +9,29 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure RDP and Firewall
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' -Value 0 -Force
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" || Write-Host "No existing rule"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          # Open RDP and Sunshine firewall ports
+          $rules = @(
+            @{Name="RDP"; Port=3389; Proto="TCP"},
+            @{Name="Sunshine-TCP"; Port=47984; Proto="TCP"},
+            @{Name="Sunshine-UDP"; Port=47989; Proto="UDP"}
+          )
+          foreach ($r in $rules) {
+            netsh advfirewall firewall delete rule name=$r.Name | Out-Null
+            netsh advfirewall firewall add rule name=$r.Name dir=in action=allow protocol=$r.Proto localport=$r.Port profile=any | Out-Null
+          }
 
           Restart-Service -Name TermService -Force
+          Write-Host "RDP + Firewall configured."
 
-      - name: Create RDP User (tk / mk)
+      - name: Create Administrator User
         shell: pwsh
         run: |
           $username = "Datlohehe"
@@ -32,86 +39,92 @@ jobs:
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires -Description "User created by GitHub Actions for RDP"
+              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires -Description "Admin User for RDP"
           } else {
               (Get-LocalUser -Name $username) | Set-LocalUser -Password $securePass
           }
 
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
 
-          echo "RDP_CREDS=User:$username | Password:$password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=User:$username|Password:$password" >> $env:GITHUB_ENV
+          Write-Host "User created with full admin rights."
 
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = Join-Path $env:TEMP "tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i","`"$installerPath`"","/quiet","/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $file = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i","`"$file`"","/quiet","/norestart" -Wait
+          Remove-Item $file -Force
+          Write-Host "Tailscale installed."
 
-      - name: Establish Tailscale Connection
+      - name: Connect to Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $exe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          $hostName = "ghrunner-" + $env:GITHUB_RUN_NUMBER
+          if (-not (Test-Path $exe)) { Write-Error "tailscale.exe not found"; exit 1 }
 
-          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName | Out-Null
+          $hostname = "ghrunner-" + $env:GITHUB_RUN_NUMBER
+          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostname | Out-Null
 
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 12) {
-              $ipOut = & $exe ip -4 2>$null
-              if ($ipOut) {
-                  $tsIP = ($ipOut -split "`n" | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' } | Select-Object -First 1)
+          $ip = $null; $retry = 0
+          while (-not $ip -and $retry -lt 20) {
+              $out = & $exe ip -4 2>$null
+              if ($out) {
+                  $ip = ($out -split "`n" | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' } | Select-Object -First 1)
               }
               Start-Sleep -Seconds 5
-              $retries++
+              $retry++
           }
 
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+          if (-not $ip) {
+              Write-Error "No Tailscale IP assigned."
               exit 1
           }
 
-          Add-Content -Path $env:GITHUB_ENV -Value ("TAILSCALE_IP=" + $tsIP)
+          Add-Content -Path $env:GITHUB_ENV -Value ("TAILSCALE_IP=" + $ip)
+          Write-Host "Connected to Tailscale. IP: $ip"
 
-      - name: Verify RDP Accessibility
+      - name: Install Sunshine (Moonlight support)
         shell: pwsh
         run: |
-          $tsIP = $env:TAILSCALE_IP
-          Write-Host "Tailscale IP: $tsIP"
-          $testResult = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity to port 3389 successful."
+          $installer = "$env:TEMP\sunshine-installer.exe"
+          Invoke-WebRequest -Uri "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-Installer.exe" -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
+          Write-Host "Sunshine installed."
 
-      - name: Install Sunshine (for Moonlight)
+      - name: Verify Connectivity
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-Installer.exe" -OutFile "$env:TEMP\sunshine.exe"
-          Start-Process -FilePath "$env:TEMP\sunshine.exe" -ArgumentList "/S" -Wait
-          netsh advfirewall firewall add rule name="Sunshine-TCP" dir=in action=allow protocol=TCP localport=47984
-          netsh advfirewall firewall add rule name="Sunshine-UDP" dir=in action=allow protocol=UDP localport=47989
-          Write-Host "Sunshine installed and firewall ports opened."
+          $ip = $env:TAILSCALE_IP
+          Write-Host "Checking $ip ..."
 
-      - name: Maintain Connection (prints credentials)
+          $r = Test-NetConnection -ComputerName $ip -Port 3389 -WarningAction SilentlyContinue
+          if (-not $r.TcpTestSucceeded) { Write-Error "RDP port 3389 not reachable"; exit 1 }
+          Write-Host "RDP connectivity OK."
+
+          $s = Test-NetConnection -ComputerName $ip -Port 47984 -WarningAction SilentlyContinue
+          if ($s.TcpTestSucceeded) { Write-Host "Sunshine web port 47984 reachable." }
+          else { Write-Host "Sunshine HTTP port closed (normal if service not yet active)." }
+
+      - name: Keep Session Alive
         shell: pwsh
         run: |
           $creds = (Get-Content -Path $env:GITHUB_ENV | Where-Object { $_ -like 'RDP_CREDS=*' }) -split '=' | Select-Object -Last 1
-          $tsIP = $env:TAILSCALE_IP
-          Write-Host "`n=== ACCESS INFO ==="
-          Write-Host "Tailscale IP: $tsIP"
-          Write-Host "RDP Credentials: $creds"
-          Write-Host "Sunshine: https://$tsIP:47984"
-          Write-Host "=====================`n"
+          $ip = $env:TAILSCALE_IP
+          Write-Host "`n===== CONNECTION INFO ====="
+          Write-Host "Tailscale IP: $ip"
+          Write-Host "RDP: $ip:3389"
+          Write-Host "Credentials: $creds"
+          Write-Host "Sunshine Web: https://$ip:47984"
+          Write-Host "===========================`n"
 
           while ($true) {
-              Write-Host "[$(Get-Date -Format o)] Active - workflow running."
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Session alive."
               Start-Sleep -Seconds 300
           }
