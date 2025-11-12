@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           $username = "Datlohehe"
-          $password = "OLXQ@1234"
+          $password = "datlo@1234"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
