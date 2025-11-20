@@ -92,17 +92,21 @@ jobs:
           }
           Write-Host "TCP connectivity to port 3389 successful."
 
-      - name: Maintain Connection (prints credentials)
+           - name: Maintain Connection (prints credentials)
         shell: pwsh
         run: |
-          $creds = (Get-Content -Path $env:GITHUB_ENV | Where-Object { $_ -like 'RDP_CREDS=*' }) -split '=' | Select-Object -Last 1
+          $username = "Datlohehe"
+          $password = "datlo@1234"
           $tsIP = $env:TAILSCALE_IP
+
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $tsIP"
-          Write-Host "Credentials: $creds"
+          Write-Host "Address (Tailscale IP): $tsIP"
+          Write-Host "Username: $username"
+          Write-Host "Password: $password"
           Write-Host "==================`n"
 
           while ($true) {
               Write-Host "[$(Get-Date -Format o)] RDP Active - workflow will run until cancelled."
               Start-Sleep -Seconds 300
           }
+
