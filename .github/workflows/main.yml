@@ -7,28 +7,37 @@ jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
+    env:
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
+      - name: Validate required secrets
+        shell: pwsh
+        run: |
+          if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "Missing secret: TAILSCALE_AUTH_KEY"; exit 1 }
+          if (-not $env:RDP_USERNAME) { Write-Error "Missing secret: RDP_USERNAME"; exit 1 }
+          if (-not $env:RDP_PASSWORD) { Write-Error "Missing secret: RDP_PASSWORD"; exit 1 }
+          Write-Host "All required secrets present."
+
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
 
           netsh advfirewall firewall delete rule name="RDP-Tailscale" || Write-Host "No existing rule"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User (tk / mk)
+      - name: Create RDP User (from secrets)
         shell: pwsh
         run: |
-          $username = "Datlohehe"
-          $password = "datlo@1234"
+          $username = $env:RDP_USERNAME
+          $password = $env:RDP_PASSWORD
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
@@ -40,7 +49,8 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
 
-          echo "RDP_CREDS=User:$username | Password:$password" >> $env:GITHUB_ENV
+          # Do not expose plaintext password in logs; store only non-sensitive hint
+          echo "RDP_CREDS=User:$username | Password: (stored in repo secret RDP_PASSWORD)" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         shell: pwsh
@@ -49,16 +59,14 @@ jobs:
           $installerPath = Join-Path $env:TEMP "tailscale.msi"
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
           Start-Process -FilePath "msiexec.exe" -ArgumentList "/i","`"$installerPath`"","/quiet","/norestart" -Wait
-          Remove-Item $installerPath -Force
+          if (Test-Path $installerPath) { Remove-Item $installerPath -Force }
 
       - name: Establish Tailscale Connection
         shell: pwsh
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $exe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (-not (Test-Path $exe)) { Write-Error "tailscale.exe not found at $exe"; exit 1 }
 
-          # Tạo hostname hợp lệ
           $hostName = "ghrunner-" + $env:GITHUB_RUN_NUMBER
 
           & $exe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$hostName | Out-Null
@@ -80,6 +88,7 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_ENV -Value ("TAILSCALE_IP=" + $tsIP)
+
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
@@ -92,21 +101,20 @@ jobs:
           }
           Write-Host "TCP connectivity to port 3389 successful."
 
-           - name: Maintain Connection (prints credentials)
+      - name: Maintain Connection (prints access info)
         shell: pwsh
         run: |
-          $username = "Datlohehe"
-          $password = "datlo@1234"
+          $username = $env:RDP_USERNAME
+          $password_hint = "(stored in repo secret RDP_PASSWORD)"
           $tsIP = $env:TAILSCALE_IP
 
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address (Tailscale IP): $tsIP"
           Write-Host "Username: $username"
-          Write-Host "Password: $password"
+          Write-Host "Password: $password_hint"
           Write-Host "==================`n"
 
           while ($true) {
               Write-Host "[$(Get-Date -Format o)] RDP Active - workflow will run until cancelled."
               Start-Sleep -Seconds 300
           }
-
