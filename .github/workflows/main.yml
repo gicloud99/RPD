@@ -1,114 +1,117 @@
-name: RDP Secure (Tailscale)
+name: Windows RDP (Tailscale Manual)
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  secure-rdp-windows:
     runs-on: windows-latest
     timeout-minutes: 360
     env:
-      # Đảm bảo bạn đã set các secrets này trong Repo Settings -> Secrets and variables -> Actions
       TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
+      # 1. Kiểm tra Secret (để tránh chạy tốn thời gian nếu thiếu)
       - name: Validate Secrets
         shell: pwsh
         run: |
           if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "Missing secret: TAILSCALE_AUTH_KEY"; exit 1 }
           if (-not $env:RDP_USERNAME) { Write-Error "Missing secret: RDP_USERNAME"; exit 1 }
           if (-not $env:RDP_PASSWORD) { Write-Error "Missing secret: RDP_PASSWORD"; exit 1 }
-          Write-Host "Secrets validated."
+          Write-Host "Secrets present."
 
-      # Bước 1: Dùng Action chính chủ để cài Tailscale (Ổn định hơn cài MSI thủ công)
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }} # Optional: Nếu dùng OAuth
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}       # Optional: Nếu dùng OAuth
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          version: latest
-          args: --ssh # Bật SSH của Tailscale để debug nếu cần
-          hostname: github-runner-rdp
+      # 2. Cài đặt Tailscale thủ công (Thay thế cho Action bị lỗi)
+      - name: Install Tailscale (Windows MSI)
+        shell: pwsh
+        run: |
+          Write-Host "Downloading Tailscale MSI..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
+          $output = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          
+          Write-Host "Installing Tailscale..."
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$output`"", "/quiet", "/norestart" -Wait
+          
+          # Đợi service khởi động
+          Write-Host "Waiting for Tailscale service..."
+          $timeout = 60
+          $timer = 0
+          while ((Get-Service "Tailscale" -ErrorAction SilentlyContinue).Status -ne 'Running' -and $timer -lt $timeout) {
+            Start-Sleep -Seconds 1
+            $timer++
+          }
+          
+          # Thêm vào PATH để gọi lệnh dễ hơn
+          $tsPath = "C:\Program Files\Tailscale"
+          echo "$tsPath" >> $env:GITHUB_PATH
+          Write-Host "Tailscale installed and service running."
 
-      # Bước 2: Cấu hình RDP và Tắt NLA (Quan trọng: KHÔNG restart TermService)
-      - name: Configure RDP Settings
+      # 3. Kết nối Tailscale
+      - name: Connect to Tailscale
+        shell: pwsh
+        run: |
+          $authKey = $env:TAILSCALE_AUTH_KEY
+          # --unattended: Chạy chế độ không tương tác
+          # --authkey: Key của bạn
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$authKey --hostname="gh-runner-win" --unattended
+          
+          Start-Sleep -Seconds 5
+          
+          $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          if (-not $tsIP) { Write-Error "Failed to get Tailscale IP"; exit 1 }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale Connected. IP: $tsIP"
+
+      # 4. Cấu hình RDP (Không restart TermService để tránh ngắt runner)
+      - name: Configure RDP
         shell: pwsh
         run: |
           # Bật RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           
-          # Tắt NLA (Network Level Authentication) để dễ kết nối từ xa hơn
+          # Tắt yêu cầu NLA (Network Level Authentication) - Giúp dễ kết nối hơn
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 1 -Force
 
-          # Cấu hình Firewall: Mở port 3389 cho tất cả các profile
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=TCP localport=3389
+          # Mở Firewall
+          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
+          netsh advfirewall firewall add rule name="Tailscale-In" dir=in action=allow protocol=TCP localport=3389
 
-          Write-Host "RDP Configured (NLA Disabled)."
-
-      # Bước 3: Tạo User
+      # 5. Tạo User RDP từ Secret
       - name: Create RDP User
         shell: pwsh
         run: |
-          $username = $env:RDP_USERNAME
-          $password = $env:RDP_PASSWORD
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $u = $env:RDP_USERNAME
+          $p = $env:RDP_PASSWORD
+          $s = ConvertTo-SecureString $p -AsPlainText -Force
 
-          # Tạo user mới nếu chưa có
-          if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires -Description "GitHub Action User"
+          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "Action User"
+              Write-Host "User created."
           } else {
-              Set-LocalUser -Name $username -Password $securePass
+              Set-LocalUser -Name $u -Password $s
+              Write-Host "User updated."
           }
 
-          # Thêm vào nhóm Admin và Remote Desktop
-          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
-          
-          Write-Host "User $username created and added to admin groups."
+          Add-LocalGroupMember -Group "Administrators" -Member $u
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
 
-      # Bước 4: Lấy IP Tailscale
-      - name: Get Tailscale IP
-        shell: pwsh
-        run: |
-          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tsPath)) {
-            # Fallback nếu path khác (do action cài đặt)
-            $tsPath = "tailscale"
-          }
-          
-          $tsIP = & $tsPath ip -4
-          if (-not $tsIP) { Write-Error "Could not get Tailscale IP"; exit 1 }
-          
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Tailscale IP is: $tsIP"
-
-      # Bước 5: Vòng lặp giữ kết nối
-      - name: Keep Alive & Display Info
+      # 6. Giữ kết nối (Loop)
+      - name: Ready for Connection
         shell: pwsh
         run: |
           $tsIP = $env:TAILSCALE_IP
-          Write-Host "============================================="
-          Write-Host "RDP READY TO CONNECT"
-          Write-Host "Server IP (Tailscale): $tsIP"
-          Write-Host "Username: $env:RDP_USERNAME"
-          Write-Host "Password: (Hidden in Secrets)"
-          Write-Host "============================================="
+          Write-Host "`n###############################################"
+          Write-Host "     RDP SESSION IS READY"
+          Write-Host "     IP Address: $tsIP"
+          Write-Host "     Username:   $env:RDP_USERNAME"
+          Write-Host "###############################################`n"
           
-          # Kiểm tra port nội bộ xem đã mở chưa
-          $check = Test-NetConnection -ComputerName "localhost" -Port 3389 -WarningAction SilentlyContinue
-          if ($check.TcpTestSucceeded) {
-            Write-Host "Port 3389 is OPEN and LISTENING internally."
-          } else {
-            Write-Warning "Port 3389 seems closed internally. RDP might fail."
-          }
-
-          # Vòng lặp giữ runner chạy tối đa 6 tiếng (hoặc hết timeout)
+          # Loop vô tận để giữ runner sống
           while ($true) {
             Start-Sleep -Seconds 60
-            Write-Host "RDP session active... $(Get-Date)"
+            Write-Host "Session active... $(Get-Date)"
           }
