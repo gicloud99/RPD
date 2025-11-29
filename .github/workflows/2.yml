@@ -1,93 +1,98 @@
-name: RDP Windows (Cloudflare No-Key)
+name: RDP Windows (Cloudflare Tunnel)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-cloudflare:
+  rdp-windows:
     runs-on: windows-latest
     timeout-minutes: 360
+    
+    # CẤU HÌNH TÊN VÀ MẬT KHẨU Ở ĐÂY
     env:
-      # Đặt Username và Password trực tiếp ở đây hoặc dùng Secrets
-      # Nếu sợ lộ pass thì nên dùng ${{ secrets.RDP_PASSWORD }}
-      RDP_USERNAME: "AdminUser"
-      RDP_PASSWORD: "Password123@" 
+      RDP_USERNAME: "UserAdmin"
+      RDP_PASSWORD: "Password123!" 
 
     steps:
-      # 1. Cấu hình User và Mật khẩu
-      - name: Create User & Enable RDP
+      # 1. Tạo User và Bật RDP
+      - name: Setup User & RDP
         shell: pwsh
         run: |
           $u = $env:RDP_USERNAME
           $p = $env:RDP_PASSWORD
           $s = ConvertTo-SecureString $p -AsPlainText -Force
 
-          # Tạo user mới nếu chưa có
-          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub Action User"
-          } else {
-              Set-LocalUser -Name $u -Password $s
-          }
-
-          # Cấp quyền Admin và RDP
+          # Tạo user
+          New-LocalUser -Name $u -Password $s -Description "GitHub Action" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $u
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
-          
-          # Bật RDP và tắt NLA (Quan trọng để dễ login)
+
+          # Bật RDP, Tắt NLA (để dễ login), Mở Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          
-          # Mở Firewall
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
-          Write-Host "User $u created and RDP enabled."
+          Write-Host "User & RDP setup complete."
 
-      # 2. Cài đặt Cloudflared
-      - name: Install Cloudflared
+      # 2. Tải và chạy Cloudflared
+      - name: Start Cloudflare Tunnel
         shell: pwsh
         run: |
-          Write-Host "Downloading Cloudflared..."
+          # Tải tool
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-          Write-Host "Cloudflared downloaded."
+          
+          # Chạy ngầm và ghi log ra file cf.log
+          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cf.log" -PassThru
+          Write-Host "Cloudflare tunnel started..."
 
-      # 3. Chạy Tunnel (Đây là bước quan trọng nhất)
-      - name: Start Tunnel
+      # 3. Lấy link và IN RA MÀN HÌNH (Phần bạn cần)
+      - name: 👉 GET LOGIN INFO 👈
         shell: pwsh
         run: |
-          Write-Host "Starting Cloudflare Tunnel..."
-          # Chạy cloudflared và đẩy log ra file để lấy link
-          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cloudflared.log" -PassThru
+          $found = $false
+          Write-Host "Dang lay dia chi ket noi..."
           
-          # Đợi một chút để lấy link
-          Start-Sleep -Seconds 10
+          # Vòng lặp đợi link xuất hiện trong 30 giây
+          for ($i = 0; $i -lt 30; $i++) {
+            if (Test-Path "cf.log") {
+              $log = Get-Content "cf.log" -Raw
+              # Tìm dòng có dạng tcp://....trycloudflare.com:1234
+              if ($log -match "tcp://([-a-z0-9.]+\.trycloudflare\.com:[0-9]+)") {
+                $address = $matches[1] # Lấy phần địa chỉ (bỏ chữ tcp://)
+                
+                # --- IN RA MÀN HÌNH THẬT TO ---
+                Write-Host "`n`n"
+                Write-Host "#######################################################" -ForegroundColor Green
+                Write-Host "#                                                     #" -ForegroundColor Green
+                Write-Host "#              THONG TIN DANG NHAP RDP                #" -ForegroundColor Green
+                Write-Host "#                                                     #" -ForegroundColor Green
+                Write-Host "#######################################################" -ForegroundColor Green
+                Write-Host ""
+                Write-Host "   🖥️  Computer (Address):  $address" -ForegroundColor Cyan
+                Write-Host "   👤  Username:            $env:RDP_USERNAME" -ForegroundColor Yellow
+                Write-Host "   🔑  Password:            $env:RDP_PASSWORD" -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "#######################################################" -ForegroundColor Green
+                Write-Host "Copy dòng 'Computer' dán vào Remote Desktop Connection"
+                Write-Host "`n`n"
+                
+                # In ra thông báo của Github (Notice)
+                echo "::notice title=RDP INFO::Address: $address | User: $env:RDP_USERNAME | Pass: $env:RDP_PASSWORD"
+                
+                $found = $true
+                break
+              }
+            }
+            Start-Sleep -Seconds 1
+          }
           
-          # Đọc file log và tìm đường dẫn trycloudflare
-          $logContent = Get-Content "cloudflared.log"
-          $tunnelUrl = $logContent | Select-String -Pattern "tcp://.*\.trycloudflare\.com:\d+"
-          
-          if ($tunnelUrl) {
-              Write-Host "`n========================================================"
-              Write-Host "   KẾT NỐI THÀNH CÔNG!"
-              Write-Host "   Copy dòng dưới đây vào Remote Desktop Connection:"
-              Write-Host "   $tunnelUrl"
-              Write-Host "   Username: $env:RDP_USERNAME"
-              Write-Host "   Password: $env:RDP_PASSWORD"
-              Write-Host "========================================================`n"
-          } else {
-              Write-Host "Đang tìm URL... Vui lòng kiểm tra file log hoặc đợi thêm."
-              Get-Content "cloudflared.log" -Tail 20
+          if (-not $found) {
+            Write-Error "Khong lay được link Cloudflare. Vui lòng thử lại!"
+            Get-Content "cf.log"
           }
 
-      # 4. Giữ kết nối sống (Anti-exit)
+      # 4. Giữ máy chạy
       - name: Keep Alive
         shell: pwsh
         run: |
-          Write-Host "RDP is running. Check the step above for the address."
-          while ($true) {
-            Start-Sleep -Seconds 60
-            # In lại log định kỳ phòng trường hợp link bị trôi
-            $logContent = Get-Content "cloudflared.log"
-            $urlMatches = $logContent | Select-String -Pattern "tcp://.*\.trycloudflare\.com:[0-9]+"
-            if ($urlMatches) {
-                 Write-Host "Current Address: $urlMatches"
-            }
-          }
+          Write-Host "RDP is running. Don't close this tab."
+          while ($true) { Start-Sleep -Seconds 60 }
