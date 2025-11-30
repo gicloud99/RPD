@@ -113,8 +113,8 @@ jobs:
           Write-Host "   ⚠️  YEU CAU: May cua ban phai cai Tailscale va da Login." -ForegroundColor Red
           Write-Host ""
           Write-Host "   🖥️  Tailscale IP:  $tsIP" -ForegroundColor Cyan
-          Write-Host "   👤  Username:      $env:RDP_USERNAME" -ForegroundColor Yellow
-          Write-Host "   🔑  Password:      $env:RDP_PASSWORD" -ForegroundColor Yellow
+          Write-Host "   👤  Username:      $Null" -ForegroundColor Yellow
+          Write-Host "   🔑  Password:      $datlo@1234" -ForegroundColor Yellow
           Write-Host ""
           Write-Host "#######################################################" -ForegroundColor Green
           Write-Host "Copy IP tren va dan vao Remote Desktop Connection"
