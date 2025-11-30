@@ -1,46 +1,77 @@
-name: RDP Windows (Bore Alternative)
+name: RDP Windows (Cloudflare Stable)
 
 on: workflow_dispatch
 
 jobs:
-  rdp-bore:
+  rdp-stable:
     runs-on: windows-latest
+    timeout-minutes: 360
+    
     steps:
-      - name: Setup RDP
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
-          $p = ConvertTo-SecureString "Password123!" -AsPlainText -Force
-          New-LocalUser "UserAdmin" -Password $p -Description "RDP"
-          Add-LocalGroupMember "Administrators" "UserAdmin"
-          Add-LocalGroupMember "Remote Desktop Users" "UserAdmin"
-
-      - name: Start Bore Tunnel
+      # 1. Cài đặt User & Môi trường
+      - name: Setup Environment
         shell: pwsh
         run: |
-          # Tải Bore
-          Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
-          Expand-Archive "bore.zip" -DestinationPath "."
+          # Đặt mật khẩu cứng ở đây cho dễ nhớ
+          $user = "UserAdmin"
+          $pass = "Password123!"
           
-          # Chạy Bore
-          Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log" -PassThru
+          # Tạo User
+          $s = ConvertTo-SecureString $pass -AsPlainText -Force
+          New-LocalUser -Name $user -Password $s -Description "GitHub Action" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member $user
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
           
-          Write-Host "Dang lay dia chi..."
-          Start-Sleep -Seconds 5
+          # Cấu hình RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           
-          # Lấy Port
-          $log = Get-Content "bore.log" -Raw
-          if ($log -match "bore.pub:(\d+)") {
-            $port = $matches[1]
-            Write-Host "`n========================================" -ForegroundColor Green
-            Write-Host "   Computer: bore.pub:$port" -ForegroundColor Cyan
-            Write-Host "   User:     UserAdmin" -ForegroundColor Yellow
-            Write-Host "   Pass:     Password123!" -ForegroundColor Yellow
-            Write-Host "========================================`n"
-          } else {
-            Get-Content "bore.log"
-          }
+          # Mở Firewall
+          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
+          
+          Write-Host "Da tao User: $user / Pass: $pass"
 
-      - name: Keep Alive
-        run: while($true) { Start-Sleep 60 }
+      # 2. Chạy Tunnel và Giữ kết nối (Gộp làm một để không bao giờ mất link)
+      - name: Start Tunnel & Keep Alive
+        shell: pwsh
+        run: |
+          Write-Host "Dang tai Cloudflared..."
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+          
+          Write-Host "Dang khoi dong Tunnel..."
+          # Chạy Cloudflare ngầm
+          $process = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cf.log" -PassThru
+          
+          # Vòng lặp vô tận để giữ máy sống và in link liên tục
+          while ($true) {
+            Start-Sleep -Seconds 10
+            
+            if (Test-Path "cf.log") {
+              $log = Get-Content "cf.log" -Raw
+              # Tìm link trycloudflare
+              $matches = [regex]::Matches($log, "tcp://([-a-z0-9.]+\.trycloudflare\.com:[0-9]+)")
+              
+              if ($matches.Count -gt 0) {
+                # Lấy kết quả mới nhất
+                $address = $matches[$matches.Count - 1].Groups[1].Value
+                
+                Clear-Host
+                Write-Host "`n=============================================" -ForegroundColor Green
+                Write-Host "       TRANG THAI: DANG CHAY (ONLINE)"
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host "   🖥️  Computer:  $address" -ForegroundColor Cyan
+                Write-Host "   👤  Username:  UserAdmin" -ForegroundColor Yellow
+                Write-Host "   🔑  Password:  Password123!" -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host "Dang giu ket noi... (Dung tat tab nay)"
+              } else {
+                Write-Host "Dang cho Cloudflare cap link... Vui long doi..."
+              }
+            }
+            
+            # Kiểm tra xem tiến trình Cloudflare còn chạy không
+            if ($process.HasExited) {
+               Write-Error "Cloudflare tunnel da bi tat dot ngot. Dang khoi dong lai..."
+               $process = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cf.log" -PassThru
+            }
+          }
