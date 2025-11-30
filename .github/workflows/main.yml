@@ -1,4 +1,4 @@
-name: RDP Moonlight (Fixed Driver)
+name: RDP Moonlight (Fixed ALL Errors)
 
 on:
   workflow_dispatch:
@@ -36,27 +36,44 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "✅ IP Tailscale: $tsIP"
 
-      # 3. Cài ViGEmBus (FIX: Dùng Choco để không bị lỗi link)
-      - name: Install ViGEmBus (Fixed)
+      # 3. Cài ViGEmBus (Dùng Choco để tránh lỗi mạng)
+      - name: Install ViGEmBus
         shell: pwsh
         run: |
-          Write-Host "Dang cai Driver Tay cam bang Chocolatey..."
+          Write-Host "Dang cai Driver Tay cam..."
           choco install vigembus -y --no-progress
-          Write-Host "✅ Cai Driver Tay cam thanh cong."
+          Write-Host "✅ Driver Tay cam OK."
 
-      # 4. Cài Virtual Display (Màn hình ảo)
-      - name: Install Virtual Display
+      # 4. Cài Virtual Display (FIX: Tự động tìm file exe)
+      - name: Install Virtual Display (Smart Fix)
         shell: pwsh
         run: |
-          Write-Host "Tao Man hinh ao..."
-          Invoke-WebRequest "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
-          Expand-Archive "usbmmidd.zip" -DestinationPath "C:\usbmmidd"
-          cd "C:\usbmmidd"
+          Write-Host "Dang tai Màn hình ảo..."
+          # Thêm UserAgent để tránh bị chặn tải
+          Invoke-WebRequest "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip" -UserAgent "Mozilla/5.0"
+          
+          Write-Host "Giai nen..."
+          Expand-Archive "usbmmidd.zip" -DestinationPath "C:\TempVD" -Force
+          
+          Write-Host "Dang tim file cai dat..."
+          # Lệnh này sẽ tìm file .exe dù nó nằm ở thư mục con nào
+          $installer = Get-ChildItem -Path "C:\TempVD" -Filter "deviceinstaller64.exe" -Recurse | Select-Object -First 1
+          
+          if (-not $installer) {
+            Write-Error "❌ Khong tim thay file cai dat trong file zip!"
+            exit 1
+          }
+          
+          # Di chuyển đến thư mục chứa file exe
+          Set-Location -Path $installer.DirectoryName
+          Write-Host "Tim thay tai: $($installer.DirectoryName)"
+          
+          Write-Host "Dang cai dat..."
           & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
           & .\deviceinstaller64.exe enableidd 1
           Write-Host "✅ Da tao man hinh 1920x1080"
 
-      # 5. Cài Sunshine (Server Moonlight)
+      # 5. Cài Sunshine
       - name: Install Sunshine
         shell: pwsh
         run: |
@@ -71,19 +88,18 @@ jobs:
           netsh advfirewall firewall add rule name="Sunshine Stream" dir=in action=allow protocol=TCP localport=47984-48010
           netsh advfirewall firewall add rule name="Sunshine UDP" dir=in action=allow protocol=UDP localport=47998-48010
 
-      # 6. Bật Sunshine & RDP
+      # 6. Bật Services
       - name: Start Services
         shell: pwsh
         run: |
-          # Bật Sunshine
           Start-Process -FilePath "C:\Program Files\Sunshine\Sunshine.exe" -WorkingDirectory "C:\Program Files\Sunshine"
           
-          # Bật RDP (để dự phòng)
+          # Bật RDP dự phòng
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
 
-      # 7. Tạo User/Pass CỐ ĐỊNH
+      # 7. Tạo User/Pass
       - name: Create User
         shell: pwsh
         run: |
@@ -92,9 +108,8 @@ jobs:
           $s = ConvertTo-SecureString $p -AsPlainText -Force
           New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $u
-          Write-Host "✅ User: $u | Pass: $p"
 
-      # 8. IN HƯỚNG DẪN
+      # 8. HƯỚNG DẪN
       - name: 👉 LOGIN INFO 👈
         shell: pwsh
         run: |
@@ -105,20 +120,12 @@ jobs:
           Write-Host "#           HUONG DAN KET NOI (MOONLIGHT)             #" -ForegroundColor Green
           Write-Host "#######################################################" -ForegroundColor Green
           Write-Host ""
-          Write-Host "   1. Tren dien thoai: Bat App Tailscale (VPN) len."
-          Write-Host "   2. Mo trinh duyet web, vao trang quan ly:"
-          Write-Host "      👉 https://$($ip):47990" -ForegroundColor Cyan
-          Write-Host "      (Neu bao loi bao mat -> Chon 'Nang cao' -> 'Tiep tuc')"
+          Write-Host "   1. Bat Tailscale tren dien thoai."
+          Write-Host "   2. Vao trang web: https://$($ip):47990" -ForegroundColor Cyan
+          Write-Host "   3. Tao User Sunshine: admin / admin"
+          Write-Host "   4. Mo App Moonlight -> Add PC -> Lay PIN -> Nhap vao web."
           Write-Host ""
-          Write-Host "   3. Tai khoan Sunshine:"
-          Write-Host "      User: admin" -ForegroundColor Yellow
-          Write-Host "      Pass: admin" -ForegroundColor Yellow
-          Write-Host ""
-          Write-Host "   4. Mo App Moonlight/Artemis -> Add PC -> Lay ma PIN."
-          Write-Host "   5. Nhap PIN vao trang web Sunshine -> XONG."
-          Write-Host ""
-          Write-Host "   --- KET NOI RDP (Neu can) ---"
-          Write-Host "   App: RD Client"
+          Write-Host "   --- WINDOWS INFO ---"
           Write-Host "   User: UserAdmin"
           Write-Host "   Pass: datlo@1234"
           Write-Host "#######################################################`n`n"
