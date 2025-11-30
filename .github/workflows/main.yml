@@ -1,127 +1,129 @@
-name: RDP Windows (Tailscale Fixed)
+name: RDP Moonlight + Tailscale (Fixed Pass)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-tailscale:
+  moonlight-tailscale:
     runs-on: windows-latest
     timeout-minutes: 360
     env:
+      # Chỉ cần đúng 1 Secret này trong Settings của GitHub
       TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-      RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
-      # 1. Kiểm tra xem đã nhập Secret chưa
-      - name: Check Secrets
+      # 1. Kiểm tra Secret
+      - name: Check Key
         shell: pwsh
         run: |
-          if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "❌ Lỗi: Chưa có TAILSCALE_AUTH_KEY trong Settings > Secrets"; exit 1 }
-          if (-not $env:RDP_USERNAME) { Write-Error "❌ Lỗi: Chưa có RDP_USERNAME"; exit 1 }
-          if (-not $env:RDP_PASSWORD) { Write-Error "❌ Lỗi: Chưa có RDP_PASSWORD"; exit 1 }
-          Write-Host "✅ Đã tìm thấy đầy đủ Secrets."
+          if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "❌ Thieu TAILSCALE_AUTH_KEY"; exit 1 }
 
-      # 2. Cài đặt Tailscale (Dùng bản ổn định)
-      - name: Install Tailscale
+      # 2. Cài đặt Tailscale & Kết nối
+      - name: Install & Connect Tailscale
         shell: pwsh
         run: |
-          Write-Host "Dang cai dat Tailscale..."
+          Write-Host "Cai dat Tailscale..."
           choco install tailscale -y --no-progress --force
           
-          # Kiểm tra đường dẫn file chạy
-          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tsPath)) {
-              Write-Error "❌ Cài đặt thất bại. Không tìm thấy file tailscale.exe"
-              exit 1
-          }
-          Write-Host "✅ Cài đặt thành công."
-
-      # 3. Kết nối Tailscale (Fix lỗi IP)
-      - name: Connect to Tailscale Network
-        shell: pwsh
-        run: |
-          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          Write-Host "Dang ket noi..."
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="github-moonlight" --unattended --reset
           
-          Write-Host "Dang ket noi voi may chu Tailscale..."
-          # Reset để tránh lỗi cũ và kết nối mới
-          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="github-runner-win" --unattended --reset
-          
-          # Vòng lặp lấy IP (Thử lại 20 lần thay vì chỉ đợi 5s)
+          # Lấy IP
           $tsIP = $null
           for ($i=0; $i -lt 20; $i++) {
-            $tsIP = & $tsExe ip -4
+            $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
             if ($tsIP) { break }
-            Start-Sleep -Seconds 2
-            Write-Host "Dang lay IP ($i)..."
+            Start-Sleep 2
           }
-          
-          if (-not $tsIP) { Write-Error "❌ Không lấy được IP Tailscale!"; exit 1 }
-          
-          # Lưu IP vào biến môi trường để bước sau dùng
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✅ Kết nối thành công! IP: $tsIP"
+          Write-Host "✅ IP Tailscale: $tsIP"
 
-      # 4. Cấu hình RDP (Tắt NLA triệt để)
-      - name: Configure RDP & Firewall
+      # 3. Cài ViGEmBus (Driver tay cầm ảo cho Moonlight)
+      - name: Install ViGEmBus
         shell: pwsh
         run: |
-          # Bật RDP
+          Write-Host "Cai dat Driver Tay cam..."
+          Invoke-WebRequest "https://github.com/ViGEm/ViGEmBus/releases/download/v1.21.442.0/ViGEmBus_Setup_1.21.442_x64.msi" -OutFile "ViGEmBus.msi"
+          Start-Process msiexec.exe -ArgumentList "/i ViGEmBus.msi /quiet /norestart" -Wait
+
+      # 4. Cài Virtual Display (Màn hình ảo - Quan trọng để có hình ảnh)
+      - name: Install Virtual Display
+        shell: pwsh
+        run: |
+          Write-Host "Tao Man hinh ao..."
+          Invoke-WebRequest "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
+          Expand-Archive "usbmmidd.zip" -DestinationPath "C:\usbmmidd"
+          cd "C:\usbmmidd"
+          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
+          & .\deviceinstaller64.exe enableidd 1
+          Write-Host "✅ Da tao man hinh 1920x1080"
+
+      # 5. Cài Sunshine (Server cho Moonlight)
+      - name: Install Sunshine
+        shell: pwsh
+        run: |
+          Write-Host "Tai Sunshine..."
+          Invoke-WebRequest "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-windows-installer.exe" -OutFile "sunshine_setup.exe"
+          Write-Host "Cai Sunshine..."
+          Start-Process -FilePath ".\sunshine_setup.exe" -ArgumentList "/S" -Wait
+          
+          # Mở Firewall cho Sunshine
+          netsh advfirewall firewall add rule name="Sunshine Web" dir=in action=allow protocol=TCP localport=47990
+          netsh advfirewall firewall add rule name="Sunshine Stream" dir=in action=allow protocol=TCP localport=47984-48010
+          netsh advfirewall firewall add rule name="Sunshine UDP" dir=in action=allow protocol=UDP localport=47998-48010
+
+      # 6. Bật RDP & Sunshine
+      - name: Start Services
+        shell: pwsh
+        run: |
+          # Bật Sunshine
+          Start-Process -FilePath "C:\Program Files\Sunshine\Sunshine.exe" -WorkingDirectory "C:\Program Files\Sunshine"
+          
+          # Bật RDP (để dự phòng)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # Tắt NLA (Quan trọng: Nếu không tắt sẽ rất khó login)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 1 -Force
-          
-          # Mở Firewall cho cổng 3389
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
-          netsh advfirewall firewall add rule name="Tailscale-In" dir=in action=allow protocol=TCP localport=3389 profile=any
-          
-          Write-Host "✅ Đã bật RDP và Tắt NLA."
 
-      # 5. Tạo User Admin
-      - name: Create User Account
+      # 7. Tạo User/Pass CỐ ĐỊNH
+      - name: Create User
         shell: pwsh
         run: |
-          $u = $env:RDP_USERNAME
-          $p = $env:RDP_PASSWORD
+          $u = "UserAdmin"
+          $p = "datlo@1234"
           $s = ConvertTo-SecureString $p -AsPlainText -Force
-
-          # Tạo user nếu chưa có, update nếu đã có
-          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub Action User"
-          } else {
-              Set-LocalUser -Name $u -Password $s
-          }
-
-          # Cấp quyền Admin
+          New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $u
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
-          Write-Host "✅ Đã tạo User: $u"
+          Write-Host "✅ User: $u | Pass: $p"
 
-      # 6. Hiển thị thông tin & Giữ kết nối
+      # 8. IN HƯỚNG DẪN SỬ DỤNG
       - name: 👉 LOGIN INFO 👈
         shell: pwsh
         run: |
-          $tsIP = $env:TAILSCALE_IP
+          $ip = $env:TAILSCALE_IP
           
           Write-Host "`n`n"
           Write-Host "#######################################################" -ForegroundColor Green
-          Write-Host "#              THONG TIN KET NOI (TAILSCALE)          #" -ForegroundColor Green
+          Write-Host "#           HUONG DAN KET NOI (MOONLIGHT)             #" -ForegroundColor Green
           Write-Host "#######################################################" -ForegroundColor Green
           Write-Host ""
-          Write-Host "   ⚠️  YEU CAU: May cua ban phai cai Tailscale va da Login." -ForegroundColor Red
+          Write-Host "   1. Tren dien thoai: Bat App Tailscale (VPN) len."
+          Write-Host "   2. Mo trinh duyet web, vao trang quan ly:"
+          Write-Host "      👉 https://$($ip):47990" -ForegroundColor Cyan
+          Write-Host "      (Neu bao loi bao mat -> Chon 'Nang cao' -> 'Tiep tuc')"
           Write-Host ""
-          Write-Host "   🖥️  Tailscale IP:  $tsIP" -ForegroundColor Cyan
-          Write-Host "   👤  Username:      $Null" -ForegroundColor Yellow
-          Write-Host "   🔑  Password:      $datlo@1234" -ForegroundColor Yellow
+          Write-Host "   3. Tai khoan quan ly Sunshine (Login xong cu de do):"
+          Write-Host "      User: admin" -ForegroundColor Yellow
+          Write-Host "      Pass: admin" -ForegroundColor Yellow
           Write-Host ""
-          Write-Host "#######################################################" -ForegroundColor Green
-          Write-Host "Copy IP tren va dan vao Remote Desktop Connection"
-          Write-Host "`n`n"
+          Write-Host "   4. Mo App Moonlight (hoac Artemis):"
+          Write-Host "      - Them PC voi IP: $ip"
+          Write-Host "      - No hien cai MA PIN (Vi du: 1234)"
+          Write-Host ""
+          Write-Host "   5. Quay lai trang web Sunshine -> Tab 'PIN' -> Nhap ma PIN -> Enter."
+          Write-Host ""
+          Write-Host "   --- THONG TIN WINDOWS (Neu can) ---"
+          Write-Host "   User: UserAdmin"
+          Write-Host "   Pass: datlo@1234"
+          Write-Host "#######################################################`n`n"
           
-          # Vòng lặp giữ máy sống
-          while ($true) {
-            Start-Sleep -Seconds 60
-            Write-Host "RDP dang chay tai IP: $tsIP..."
-          }
+          while ($true) { Start-Sleep 60 }
