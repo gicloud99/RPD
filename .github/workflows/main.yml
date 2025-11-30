@@ -1,4 +1,4 @@
-name: RDP Windows (Fixed)
+name: RDP Windows (Tailscale Fixed)
 
 on:
   workflow_dispatch:
@@ -13,93 +13,115 @@ jobs:
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
+      # 1. Kiểm tra xem đã nhập Secret chưa
       - name: Check Secrets
         shell: pwsh
         run: |
-          if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "Thieu secret: TAILSCALE_AUTH_KEY"; exit 1 }
-          if (-not $env:RDP_USERNAME) { Write-Error "Thieu secret: RDP_USERNAME"; exit 1 }
-          if (-not $env:RDP_PASSWORD) { Write-Error "Thieu secret: RDP_PASSWORD"; exit 1 }
-          Write-Host "Secrets OK."
+          if (-not $env:TAILSCALE_AUTH_KEY) { Write-Error "❌ Lỗi: Chưa có TAILSCALE_AUTH_KEY trong Settings > Secrets"; exit 1 }
+          if (-not $env:RDP_USERNAME) { Write-Error "❌ Lỗi: Chưa có RDP_USERNAME"; exit 1 }
+          if (-not $env:RDP_PASSWORD) { Write-Error "❌ Lỗi: Chưa có RDP_PASSWORD"; exit 1 }
+          Write-Host "✅ Đã tìm thấy đầy đủ Secrets."
 
-      # --- FIX: Dùng Chocolatey thay vì tải file MSI thủ công ---
-      - name: Install Tailscale (via Choco)
+      # 2. Cài đặt Tailscale (Dùng bản ổn định)
+      - name: Install Tailscale
         shell: pwsh
         run: |
-          Write-Host "Installing Tailscale using Chocolatey..."
-          choco install tailscale -y --no-progress
+          Write-Host "Dang cai dat Tailscale..."
+          choco install tailscale -y --no-progress --force
           
-          # Kiểm tra xem file exe có tồn tại không
+          # Kiểm tra đường dẫn file chạy
           $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
           if (-not (Test-Path $tsPath)) {
-              Write-Error "Tailscale installation failed or path changed."
+              Write-Error "❌ Cài đặt thất bại. Không tìm thấy file tailscale.exe"
               exit 1
           }
-          Write-Host "Tailscale installed successfully."
+          Write-Host "✅ Cài đặt thành công."
 
-      # --- Kết nối Tailscale ---
-      - name: Connect Tailscale
+      # 3. Kết nối Tailscale (Fix lỗi IP)
+      - name: Connect to Tailscale Network
         shell: pwsh
         run: |
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           
-          # Login bằng Auth Key
-          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="gh-runner-win" --unattended
+          Write-Host "Dang ket noi voi may chu Tailscale..."
+          # Reset để tránh lỗi cũ và kết nối mới
+          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="github-runner-win" --unattended --reset
           
-          # Đợi IP
-          Start-Sleep -Seconds 5
-          $tsIP = & $tsExe ip -4
+          # Vòng lặp lấy IP (Thử lại 20 lần thay vì chỉ đợi 5s)
+          $tsIP = $null
+          for ($i=0; $i -lt 20; $i++) {
+            $tsIP = & $tsExe ip -4
+            if ($tsIP) { break }
+            Start-Sleep -Seconds 2
+            Write-Host "Dang lay IP ($i)..."
+          }
           
-          if (-not $tsIP) { Write-Error "Cannot get Tailscale IP"; exit 1 }
+          if (-not $tsIP) { Write-Error "❌ Không lấy được IP Tailscale!"; exit 1 }
+          
+          # Lưu IP vào biến môi trường để bước sau dùng
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Connected! IP: $tsIP"
+          Write-Host "✅ Kết nối thành công! IP: $tsIP"
 
-      # --- Cấu hình RDP (Không restart service) ---
-      - name: Enable RDP
+      # 4. Cấu hình RDP (Tắt NLA triệt để)
+      - name: Configure RDP & Firewall
         shell: pwsh
         run: |
-          # Bật RDP & Tắt NLA (Quan trọng để dễ login)
+          # Bật RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Tắt NLA (Quan trọng: Nếu không tắt sẽ rất khó login)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 1 -Force
           
-          # Mở Firewall
+          # Mở Firewall cho cổng 3389
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
-          netsh advfirewall firewall add rule name="Tailscale-In" dir=in action=allow protocol=TCP localport=3389
-          Write-Host "RDP Enabled and NLA Disabled."
+          netsh advfirewall firewall add rule name="Tailscale-In" dir=in action=allow protocol=TCP localport=3389 profile=any
+          
+          Write-Host "✅ Đã bật RDP và Tắt NLA."
 
-      # --- Tạo User ---
-      - name: Create User
+      # 5. Tạo User Admin
+      - name: Create User Account
         shell: pwsh
         run: |
           $u = $env:RDP_USERNAME
           $p = $env:RDP_PASSWORD
           $s = ConvertTo-SecureString $p -AsPlainText -Force
 
-          # Tạo user mới
+          # Tạo user nếu chưa có, update nếu đã có
           if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub Action"
+              New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub Action User"
           } else {
               Set-LocalUser -Name $u -Password $s
           }
 
-          # Thêm quyền Admin
+          # Cấp quyền Admin
           Add-LocalGroupMember -Group "Administrators" -Member $u
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
-          Write-Host "User $u ready."
+          Write-Host "✅ Đã tạo User: $u"
 
-      # --- Giữ kết nối ---
-      - name: Wait for Connection
+      # 6. Hiển thị thông tin & Giữ kết nối
+      - name: 👉 LOGIN INFO 👈
         shell: pwsh
         run: |
           $tsIP = $env:TAILSCALE_IP
-          Write-Host "`n=================================="
-          Write-Host "   LOGIN INFO"
-          Write-Host "   IP:       $tsIP"
-          Write-Host "   Username: $env:RDP_USERNAME"
-          Write-Host "==================================`n"
           
-          # Giữ runner chạy
+          Write-Host "`n`n"
+          Write-Host "#######################################################" -ForegroundColor Green
+          Write-Host "#              THONG TIN KET NOI (TAILSCALE)          #" -ForegroundColor Green
+          Write-Host "#######################################################" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "   ⚠️  YEU CAU: May cua ban phai cai Tailscale va da Login." -ForegroundColor Red
+          Write-Host ""
+          Write-Host "   🖥️  Tailscale IP:  $tsIP" -ForegroundColor Cyan
+          Write-Host "   👤  Username:      $env:RDP_USERNAME" -ForegroundColor Yellow
+          Write-Host "   🔑  Password:      $env:RDP_PASSWORD" -ForegroundColor Yellow
+          Write-Host ""
+          Write-Host "#######################################################" -ForegroundColor Green
+          Write-Host "Copy IP tren va dan vao Remote Desktop Connection"
+          Write-Host "`n`n"
+          
+          # Vòng lặp giữ máy sống
           while ($true) {
             Start-Sleep -Seconds 60
-            Write-Host "Waiting for RDP connection... $(Get-Date)"
+            Write-Host "RDP dang chay tai IP: $tsIP..."
           }
