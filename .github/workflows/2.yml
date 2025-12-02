@@ -30,7 +30,7 @@ jobs:
         shell: pwsh
         run: |
           # Thông tin User/Pass Cố định
-          $u = "UserAdmin"
+          $u = "Datlohehe"
           $p = "datlo@1234"
           
           # Mã hóa và tạo tài khoản cục bộ
@@ -88,7 +88,7 @@ jobs:
           Write-Host "#           RDP ACCESS INFO FOR ANH DAT               #" -ForegroundColor Green
           Write-Host "#######################################################" -ForegroundColor Green
           Write-Host "Name: ANH DAT (RDP Premium)"
-          Write-Host "Username: UserAdmin"
+          Write-Host "Username: Datlohehe"
           Write-Host "Password: $pass"
           Write-Host "Tailscale IP: $ip"
           Write-Host "#######################################################"
