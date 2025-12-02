@@ -1,6 +1,98 @@
-name: Maintain RDP Session (PREMIUM)
-run: |
-while ($true) {
-Write-Host "[PREMIUM] RDP is running for Duc Theng..."
-Start-Sleep -Seconds 300
-}
+[span_0](start_span)name: RDP Premium - Anh Dat Fixed[span_0](end_span)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    [span_1](start_span)timeout-minutes: 360[span_1](end_span)
+
+    steps:
+      # 1. Cấu hình các thiết lập RDP cốt lõi và Firewall
+      - name: Configure Core RDP Settings
+        run: |
+          # Bật RDP
+          [span_2](start_span)Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force[span_2](end_span)
+          [span_3](start_span)Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force[span_3](end_span)
+          [span_4](start_span)Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "Security Layer" -Value 0 -Force[span_4](end_span)
+          
+          # Cấu hình Firewall cho RDP Port 3389
+          [span_5](start_span)netsh advfirewall firewall delete rule name="RDP-Tailscale"[span_5](end_span)
+          [span_6](start_span)netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389[span_6](end_span)
+          
+          # Khởi động lại dịch vụ RDP
+          [span_7](start_span)Restart-Service -Name TermService -Force[span_7](end_span)
+
+      # 2. Tạo Tài khoản CỐ ĐỊNH cho Anh Đạt (thay cho tài khoản ngẫu nhiên)
+      - name: Create Account for Anh Dat
+        run: |
+          # Thông tin User/Pass Cố định
+          $u = "UserAdmin"
+          $p = "datlo@1234"
+          
+          # Mã hóa và tạo tài khoản cục bộ
+          $s = ConvertTo-SecureString $p -AsPlainText -Force
+          [span_8](start_span)New-LocalUser -Name $u -Password $s -AccountNeverExpires -Description "GitHub RDP" -ErrorAction SilentlyContinue[span_8](end_span)
+          
+          # Gán quyền Admin và Remote Desktop Users
+          [span_9](start_span)Add-LocalGroupMember -Group "Administrators" -Member $u[span_9](end_span)
+          [span_10](start_span)Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u[span_10](end_span)
+          
+          # LƯU MẬT KHẨU VÀO BIẾN MÔI TRƯỜNG MỚI: RDP_PASSWORD
+          # Biến môi trường này chứa mật khẩu để hiển thị ở cuối
+          [span_11](start_span)echo "RDP_PASSWORD=$p" >> $env:GITHUB_ENV[span_11](end_span)
+          Write-Host "✅ User: $u | Pass: $p"
+
+      # 3. Cài đặt Tailscale (dùng MSI)
+      - name: Install Tailscale
+        run: |
+          [span_12](start_span)$tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"[span_12](end_span)
+          [span_13](start_span)$installerPath = "$env:TEMP\tailscale.msi"[span_13](end_span)
+          [span_14](start_span)Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath[span_14](end_span)
+          [span_15](start_span)Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait[span_15](end_span)
+          [span_16](start_span)Remove-Item $installerPath -Force[span_16](end_span)
+
+      # 4. Thiết lập Kết nối Tailscale
+      - name: Establish Tailscale Connection
+        run: |
+          [span_17](start_span)& "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=Premium-AnhDat-$env:GITHUB_RUN_ID[span_17](end_span)
+          
+          [span_18](start_span)$tsIP = $null[span_18](end_span)
+          [span_19](start_span)$retry = 0[span_19](end_span)
+          # Lặp để lấy IP Tailscale
+          [span_20](start_span)while (-not $tsIP -and $retry -lt 10) {[span_20](end_span)
+            [span_21](start_span)$tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4[span_21](end_span)
+            [span_22](start_span)Start-Sleep -Seconds 5[span_22](end_span)
+            [span_23](start_span)$retry++[span_23](end_span)
+          }
+          
+          [span_24](start_span)if (-not $tsIP) { Write-Error "❌ Không lấy được IP Tailscale"; exit 1 }[span_24](end_span)
+          
+          [span_25](start_span)echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV[span_25](end_span)
+          Write-Host "✅ IP Tailscale: $tsIP"
+
+      # 5. Hiển thị Thông tin Đăng nhập cho Anh Đạt
+      - name: Show RDP Access Info for Anh Dat
+        run: |
+          $ip = $env:TAILSCALE_IP
+          $pass = $env:RDP_PASSWORD
+          
+          Write-Host ""
+          Write-Host "#######################################################" -ForegroundColor Green
+          Write-Host "#           RDP ACCESS INFO FOR ANH DAT               #" -ForegroundColor Green
+          Write-Host "#######################################################" -ForegroundColor Green
+          Write-Host "Name: ANH DAT (RDP Premium)"
+          Write-Host "Username: UserAdmin"
+          Write-Host "Password: $pass"
+          Write-Host "Tailscale IP: $ip"
+          Write-Host "#######################################################"
+          Write-Host ""
+
+      # 6. Duy trì Phiên RDP
+      - name: Maintain RDP Session (PREMIUM)
+        run: |
+          [span_26](start_span)Write-Host "[PREMIUM] RDP is running for Anh Dat..."[span_26](end_span)
+          [span_27](start_span)while ($true) {[span_27](end_span)
+            [span_28](start_span)Start-Sleep -Seconds 300[span_28](end_span)
+          }
